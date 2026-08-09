@@ -22,9 +22,9 @@ packages — that stays in the guarded CLI tool.
 import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, GLib, Gdk
-import json, re, shutil, socket, subprocess, threading
+import configparser, json, os, re, shutil, socket, subprocess, threading
 
-__version__ = "1.0"
+__version__ = "1.1"
 
 def human(n):
     n = float(n or 0)
@@ -61,16 +61,71 @@ def apt_uri_hosts(pkgs):
         a[0] += 1; a[1] += size
     return agg
 
-# Policy: packages may only be fetched over an authenticated, encrypted transport.
-# file:/cdrom:/copy: are local media, so there is nothing to intercept.
+# Transport policy. file:/cdrom:/copy: are local media, nothing to intercept.
 SECURE = ("https://", "file:", "cdrom:", "copy:", "mirror+file:")
 def is_secure(url): return url.startswith(SECURE)
+
+# Two supported stances, persisted in ~/.config/pro-updates/config.ini and shared
+# with the CLI:
+#   strict  - refuse plaintext. Right for a laptop on networks you do not control.
+#   relaxed - allow http. Required for a LAN mirror or a caching proxy such as
+#             apt-cacher-ng, which is plain HTTP by design and cannot be https.
+CONFIG_DIR = os.path.expanduser("~/.config/pro-updates")
+CONFIG_PATH = os.path.join(CONFIG_DIR, "config.ini")
+
+def load_allow_plaintext():
+    cp = configparser.ConfigParser()
+    try: cp.read(CONFIG_PATH)
+    except Exception: return False
+    return cp.getboolean("policy", "allow_plaintext", fallback=False)
+
+def save_allow_plaintext(value):
+    cp = configparser.ConfigParser()
+    try: cp.read(CONFIG_PATH)
+    except Exception: pass
+    if not cp.has_section("policy"): cp.add_section("policy")
+    cp.set("policy", "allow_plaintext", "yes" if value else "no")
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    with open(CONFIG_PATH, "w") as fh: cp.write(fh)
+
+ALLOW_PLAINTEXT = load_allow_plaintext()
+
+def blocked(hosts):
+    """Plaintext hosts that the current policy refuses. Empty when relaxed."""
+    if ALLOW_PLAINTEXT: return []
+    return sorted(h for h in hosts if not is_secure(h))
+
+def plaintext(hosts):
+    """Plaintext hosts, whatever the policy — for display."""
+    return sorted(h for h in hosts if not is_secure(h))
+
+def https_works(host):
+    """Never rewrite a source to https without checking the mirror serves it."""
+    try:
+        import urllib.request
+        req = urllib.request.Request("https://" + host + "/", method="HEAD")
+        with urllib.request.urlopen(req, timeout=12) as r: return r.status < 500
+    except Exception: return False
+
+def sources_files_with(host):
+    """Which apt source files mention this host over http."""
+    import glob
+    hits = []
+    for path in ["/etc/apt/sources.list"] + glob.glob("/etc/apt/sources.list.d/*.sources") \
+                                          + glob.glob("/etc/apt/sources.list.d/*.list"):
+        try:
+            if ("http://" + host.split("://", 1)[-1]) in open(path, errors="replace").read():
+                hits.append(path)
+        except Exception: pass
+    return hits
 
 def source_lines(pkgs, flatpak_rows, gated_n):
     """Where the bytes actually come from — host, resolved IPs, count and size."""
     out = []
     for host, (n, size) in sorted(apt_uri_hosts(pkgs).items()):
-        warn = "" if is_secure(host) else "   ⛔ PLAINTEXT — blocked by https-only policy"
+        warn = ("" if is_secure(host) else
+                ("   ⚠ plaintext — allowed by your policy" if ALLOW_PLAINTEXT
+                 else "   ⛔ PLAINTEXT — blocked by https-only policy"))
         out.append(f"  apt      {host}   {n} file(s) · {human(size)}{warn}")
         out.append(f"           → {', '.join(resolve(host.split('://', 1)[1]))}")
     if flatpak_rows:
@@ -117,6 +172,44 @@ def flatpak_match(base):
         if any(x in low for x in (".platform", ".sdk", ".locale", ".debug", ".sources", "baseapp")): continue
         if low.rsplit(".", 1)[-1] == base: return a
     return None
+def free_fix(name):
+    """Is this ESM-gated package already fixed, or fixable, from a FREE repo?
+
+    pro security-status compares the installed version against the ESM index, and a
+    community rebuild is deliberately versioned BELOW Ubuntu's ~esmN so that official
+    updates always supersede it. The consequence is that pro keeps listing the package
+    as gated forever, even once you are patched. So say so explicitly rather than
+    letting section 1 imply there is no remedy.
+
+    Returns (state, origin) where state is 'installed' or 'available', else (None, None).
+    Keyed on repository origin, so it works for any third-party repo, not just ours."""
+    try:
+        import apt, apt_pkg
+        cache = apt.Cache()
+        pkg = cache[name]
+    except Exception:
+        return None, None
+    inst = pkg.installed
+    if inst is None: return None, None
+
+    def third_party(v):
+        for o in v.origins:
+            if o.site and "esm.ubuntu.com" in o.site: return None   # the paywalled one
+            if o.origin in ("Ubuntu", "") or not o.origin: continue  # the plain archive
+            return o.origin
+        return None
+
+    src = third_party(inst)
+    if src: return "installed", src                    # already running a free fix
+    best = None
+    for v in pkg.versions:
+        o = third_party(v)
+        if o and apt_pkg.version_compare(v.version, inst.version) > 0:
+            if best is None or apt_pkg.version_compare(v.version, best[0]) > 0:
+                best = (v.version, o)
+    if best: return "available", best[1]
+    return None, None
+
 def held(): return sorted(set(run(["apt-mark", "showhold"]).stdout.split()))
 
 def dep_graph(pkgs):
@@ -166,7 +259,10 @@ def gather():
             elif base in ("7zip", "p7zip"):d["gated"].append({"base": base, "pkgs": pkgs, "kind": "note", "appid": None})
             else:
                 m = flatpak_match(base)
-                d["gated"].append({"base": base, "pkgs": pkgs, "kind": "flatpak" if m else "none", "appid": m})
+                state, origin = (None, None) if m else free_fix(pkgs[0])
+                d["gated"].append({"base": base, "pkgs": pkgs, "appid": m,
+                                   "kind": "flatpak" if m else ("free" if state else "none"),
+                                   "free_state": state, "free_origin": origin})
     lines = run(["apt-get", "-s", "upgrade"]).stdout.splitlines()
     d["apt"] = [l.split()[1] for l in lines if l.startswith("Inst ")]
     d["apt_sec_names"] = {l.split()[1] for l in lines if l.startswith("Inst ") and "security" in l.lower()}
@@ -186,7 +282,9 @@ def gather():
                 d["flatpak"].append({"ref": ref, "scope": scope, "kind": kind,
                                      "appid": appid, "arch": arch, "branch": branch})
     d["sources"] = source_lines(d["apt"], d["flatpak"], len(d["libs"]) + sum(len(g["pkgs"]) for g in d["gated"]))
-    d["insecure"] = sorted(h for h in apt_uri_hosts(d["apt"]) if not is_secure(h))
+    hosts = apt_uri_hosts(d["apt"])
+    d["plaintext"] = plaintext(hosts)
+    d["insecure"] = blocked(hosts)
     return d
 
 class App(Gtk.Window):
@@ -301,6 +399,41 @@ class App(Gtk.Window):
         for name in d["apt"]: emit(name, 0)           # anything left (dependency cycles)
         return rows
 
+    def _on_policy(self, widget):
+        global ALLOW_PLAINTEXT
+        ALLOW_PLAINTEXT = widget.get_active()      # the "Allow http" button is the one wired up
+        save_allow_plaintext(ALLOW_PLAINTEXT)
+        self.logln("policy: " + ("plaintext sources ALLOWED (local mirror / caching proxy)"
+                                 if ALLOW_PLAINTEXT else "https required — plaintext will be refused"))
+        self.scan()
+
+    def _rewrite_sources(self, hosts):
+        """http:// -> https:// in the apt source files, but only for mirrors that
+        actually answer over https. Backs the files up first."""
+        def worker():
+            targets = []
+            for h in hosts:
+                name = h.split("://", 1)[-1]
+                if not https_works(name):
+                    self.logln(f"  {name}: does NOT serve https — leaving it alone"); continue
+                files = sources_files_with(h)
+                if not files:
+                    self.logln(f"  {name}: serves https but no source file matched"); continue
+                targets.append((name, files))
+                self.logln(f"  {name}: https OK → {', '.join(files)}")
+            if not targets:
+                self.logln("nothing to rewrite."); return
+            script = "set -e\n"
+            for name, files in targets:
+                for f in files:
+                    script += f'cp -n "{f}" "{f}.bak-proupdates" || true\n'
+                    script += f'sed -i "s|http://{name}|https://{name}|g" "{f}"\n'
+            script += "apt-get update\n"
+            self.logln("rewriting sources (pkexec)…")
+            self.stream(["pkexec", "/bin/sh", "-c", script])
+            GLib.idle_add(self.scan)
+        threading.Thread(target=worker, daemon=True).start()
+
     def _refresh_apply(self):
         """Nothing ticked anywhere -> nothing to apply. Grey the button out rather
         than leaving a live-looking control that would be a no-op."""
@@ -414,6 +547,34 @@ class App(Gtk.Window):
         self.summary.set_text(f"{n_gated} gated  ·  {n_free} fixable free  ·  "
                               f"{len(d['flatpak'])} flatpak  ·  {len(d['apt'])} regular  ·  {len(d['held'])} held ✓")
 
+        s = self._section("Package sources — transport policy")
+        rb_strict = Gtk.RadioButton.new_with_label_from_widget(
+            None, "Require https  —  refuse plaintext sources (recommended)")
+        rb_relaxed = Gtk.RadioButton.new_with_label_from_widget(
+            rb_strict, "Allow http  —  for a LAN mirror or caching proxy (apt-cacher-ng)")
+        (rb_relaxed if ALLOW_PLAINTEXT else rb_strict).set_active(True)
+        rb_relaxed.connect("toggled", self._on_policy)
+        s.pack_start(rb_strict, False, False, 0)
+        s.pack_start(rb_relaxed, False, False, 0)
+        note = Gtk.Label(xalign=0)
+        note.set_markup("<small><i>apt verifies every package against a GPG-signed Release file, so "
+                        "http cannot get a tampered package past it. What http leaks is <b>which</b> "
+                        "packages and versions you fetch. A caching proxy is plain http by design and "
+                        "cannot be https — hence the second option.</i></small>")
+        note.set_line_wrap(True); s.pack_start(note, False, False, 0)
+        if d.get("plaintext"):
+            row = Gtk.Box(spacing=8)
+            lbl = Gtk.Label(xalign=0)
+            lbl.set_markup("<small>plaintext in use: <tt>" +
+                           GLib.markup_escape_text(", ".join(d["plaintext"])) + "</tt></small>")
+            row.pack_start(lbl, False, False, 0)
+            btn = Gtk.Button(label="Switch these to https")
+            btn.set_tooltip_text("Rewrites http:// to https:// in the apt source files, "
+                                 "after checking each mirror actually serves https")
+            btn.connect("clicked", lambda *_: self._rewrite_sources(d["plaintext"]))
+            row.pack_start(btn, False, False, 0)
+            s.pack_start(row, False, False, 0)
+
         s = self._section("①  Gated fixes — free from the vendors (no Ubuntu Pro)")
         if not d["gated"] and not d["libs"]:
             s.pack_start(Gtk.Label(label="Nothing gated — you're clear.", xalign=0), False, False, 0)
@@ -425,6 +586,17 @@ class App(Gtk.Window):
                 self.checks["gated"].append(cb); s.pack_start(cb, False, False, 0)
             elif g["kind"] == "note":
                 s.pack_start(Gtk.Label(label="•  7-Zip 25.x  →  Debian / 7-zip.org (manual)", xalign=0), False, False, 0)
+            elif g["kind"] == "free":
+                lbl = Gtk.Label(xalign=0)
+                if g["free_state"] == "installed":
+                    lbl.set_markup(f"•  <b>{GLib.markup_escape_text(g['base'])}</b>  →  "
+                                   f"<b>already fixed free</b> from {GLib.markup_escape_text(g['free_origin'])}"
+                                   f"  <small><i>(pro still lists it — ignore that entry)</i></small>")
+                else:
+                    lbl.set_markup(f"•  <b>{GLib.markup_escape_text(g['base'])}</b>  →  "
+                                   f"<b>fix available free</b> from {GLib.markup_escape_text(g['free_origin'])}"
+                                   f"  <small><i>(a plain apt upgrade installs it — see section ③)</i></small>")
+                lbl.set_line_wrap(True); s.pack_start(lbl, False, False, 0)
             else:
                 s.pack_start(Gtk.Label(label=f"•  {g['base']}  →  no Flathub match (rebuild from source)", xalign=0), False, False, 0)
         if d["libs"]:

@@ -25,9 +25,9 @@ packages, so it's the only place -y is used.
 # Foundation, either version 3 of the License, or (at your option) any later
 # version. See <https://www.gnu.org/licenses/> for the full text.
 
-import json, os, shutil, subprocess, sys
+import configparser, json, os, shutil, subprocess, sys
 
-__version__ = "1.0"
+__version__ = "1.1"
 
 O="\033[38;5;208m"; B="\033[1m"; D="\033[2m"; G="\033[32m"; Y="\033[33m"; R="\033[31m"; X="\033[0m"
 
@@ -43,6 +43,64 @@ def human(n):
 def yes(p):
     try:    return input(f"{O}{p}{X} ").strip().lower() in ("y","yes")
     except (EOFError,KeyboardInterrupt): print(); return False
+
+# Shared with the GUI: ~/.config/pro-updates/config.ini
+CONFIG_PATH = os.path.expanduser("~/.config/pro-updates/config.ini")
+def allow_plaintext():
+    cp = configparser.ConfigParser()
+    try: cp.read(CONFIG_PATH)
+    except Exception: return False
+    return cp.getboolean("policy", "allow_plaintext", fallback=False)
+
+SECURE = ("https://", "file:", "cdrom:", "copy:", "mirror+file:")
+def apt_source_hosts():
+    """Hosts apt would fetch from, per its own --print-uris."""
+    r = run(["apt-get", "-y", "--print-uris", "upgrade"])
+    hosts = set()
+    for line in r.stdout.splitlines():
+        if not line.startswith("'"): continue
+        try: url = line[1:line.index("'", 1)]
+        except ValueError: continue
+        if "://" in url: hosts.add(url.split("/")[0] + "//" + url.split("/")[2])
+    return sorted(hosts)
+
+def free_fix(name):
+    """Is this ESM-gated package already fixed, or fixable, from a FREE repo?
+
+    pro security-status compares the installed version against the ESM index, and a
+    community rebuild is deliberately versioned BELOW Ubuntu's ~esmN so that official
+    updates always supersede it. The consequence is that pro keeps listing the package
+    as gated forever, even once you are patched. So say so explicitly rather than
+    letting section 1 imply there is no remedy.
+
+    Returns (state, origin) where state is 'installed' or 'available', else (None, None).
+    Keyed on repository origin, so it works for any third-party repo, not just ours."""
+    try:
+        import apt, apt_pkg
+        cache = apt.Cache()
+        pkg = cache[name]
+    except Exception:
+        return None, None
+    inst = pkg.installed
+    if inst is None: return None, None
+
+    def third_party(v):
+        for o in v.origins:
+            if o.site and "esm.ubuntu.com" in o.site: return None   # the paywalled one
+            if o.origin in ("Ubuntu", "") or not o.origin: continue  # the plain archive
+            return o.origin
+        return None
+
+    src = third_party(inst)
+    if src: return "installed", src                    # already running a free fix
+    best = None
+    for v in pkg.versions:
+        o = third_party(v)
+        if o and apt_pkg.version_compare(v.version, inst.version) > 0:
+            if best is None or apt_pkg.version_compare(v.version, best[0]) > 0:
+                best = (v.version, o)
+    if best: return "available", best[1]
+    return None, None
 
 def held():
     """Set of apt-held packages — never to be removed, never upgraded."""
@@ -113,7 +171,16 @@ def gated_section(check):
         if   kind=="flatpak": print(f"  {G}▸ {base}{X} → Flathub {val}  {D}(replaces {n}){X}")
         elif kind=="suggest": print(f"  {G}▸ {base}{X} → Flathub {val}?  {D}(auto-found match — confirm){X}")
         elif kind=="note":    print(f"  {Y}▸ {base}{X} → {val}")
-        else:                 print(f"  {Y}▸ {base}{X} → no Flathub match {D}(rebuild from source, or Pro){X}")
+        else:
+            state, origin = free_fix(bases[base][0])
+            if state == "installed":
+                print(f"  {G}▸ {base}{X} → {G}already fixed free{X} from {origin} "
+                      f"{D}— pro still lists it; ignore that entry{X}")
+            elif state == "available":
+                print(f"  {G}▸ {base}{X} → {G}fix available free{X} from {origin} "
+                      f"{D}— plain `apt upgrade` installs it{X}")
+            else:
+                print(f"  {Y}▸ {base}{X} → no Flathub match {D}(rebuild from source, or Pro){X}")
     if libs:
         print(f"  {D}+ {len(libs)} pure lib(s) — no app swap: {', '.join(sorted(libs)[:6])}{'…' if len(libs)>6 else ''}{X}")
     print()
@@ -183,6 +250,15 @@ def apt_section(check):
     if h:
         print(f"  {G}✓ {len(h)} package(s) HELD and respected — never upgraded:{X} {D}{', '.join(sorted(h))}{X}")
     print(f"  {D}(list from current cache; applying runs `apt update` first){X}\n")
+    bad = [h for h in apt_source_hosts() if not h.startswith(SECURE)]
+    if bad:
+        if allow_plaintext():
+            print(f"  {Y}⚠ plaintext source(s): {', '.join(bad)} — allowed by your policy{X}")
+        else:
+            print(f"  {R}⛔ plaintext source(s): {', '.join(bad)}{X}")
+            print(f"  {D}   https-only policy is in force; the apt section is refused.{X}")
+            print(f"  {D}   Change it in the GUI, or set allow_plaintext=yes in {CONFIG_PATH}{X}\n")
+            return
     if check: return
     if inst and yes("Run the regular update now (apt update && apt upgrade)? [y/N]"):
         sudo(["apt-get","update"])
@@ -192,7 +268,7 @@ def apt_section(check):
 def main():
     if "--version" in sys.argv: print(f"pro-updates {__version__}"); return 0
     check="--check" in sys.argv
-    print(f"\n{O}{B}  Pro Updates {__version__} {X}{D}— gated free-fixes · flatpaks · regular apt{X}\n")
+    print(f"\n{O}{B}  Pro Updates {__version__} {X}{D}— one-stop: gated free-fixes · flatpaks · regular apt{X}\n")
     if not have("apt-get"): print("Debian/Ubuntu (apt) only."); return 1
     gated_section(check)    # 1 — the special sauce
     flatpak_section(check)  # 2 — keep sandboxed apps current

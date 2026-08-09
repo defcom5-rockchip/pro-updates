@@ -86,6 +86,12 @@ Flatpak sections, `python3-apt` for dependency nesting (without it the package l
 flat), and `ubuntu-pro-client` for section ①. All are installed by the installer where
 available; each degrades gracefully when absent, so it runs on plain Debian too.
 
+## Related
+
+[ByteBender](https://github.com/defcom5-rockchip/ByteBender) reproduces the ESM-gated fixes
+themselves from public sources, and publishes them to `ppa:defcom5-rockchip/security`. Pro
+Updates reports what is gated; ByteBender is one way to un-gate it.
+
 ## Licence
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).

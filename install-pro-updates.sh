@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# Copyright (C) 2026 defcom5-rockchip
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, either version 3 of the License, or (at your option) any later
+# version. See <https://www.gnu.org/licenses/> for the full text.
 #
 # install-pro-updates.sh — installs the Pro Updates tool (CLI + GTK GUI + launcher)
 # on a Debian/Ubuntu box. Run it from the folder that holds pro-updates.py and

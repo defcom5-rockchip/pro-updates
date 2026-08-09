@@ -18,6 +18,13 @@ SAFETY (learned the hard way): never removes shared libs, never uses `-y` on a
 removal, never runs `autoremove`. `apt upgrade` (regular section) never removes
 packages, so it's the only place -y is used.
 """
+# Copyright (C) 2026 defcom5-rockchip
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, either version 3 of the License, or (at your option) any later
+# version. See <https://www.gnu.org/licenses/> for the full text.
+
 import json, os, shutil, subprocess, sys
 
 __version__ = "1.0"

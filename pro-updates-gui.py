@@ -12,6 +12,13 @@ One "Apply Selected" button. flatpak installs run per-user (no root); apt runs
 via pkexec (graphical password). Honors apt holds. SAFETY: the GUI never removes
 packages — that stays in the guarded CLI tool.
 """
+# Copyright (C) 2026 defcom5-rockchip
+#
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, either version 3 of the License, or (at your option) any later
+# version. See <https://www.gnu.org/licenses/> for the full text.
+
 import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, GLib, Gdk

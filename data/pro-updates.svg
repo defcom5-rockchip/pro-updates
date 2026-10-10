@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later — Pro Updates icon, drawn for this project -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="#14776d"/>
+  <path d="M64 28 A36 36 0 1 1 28.6 57.5" fill="none" stroke="#ffffff" stroke-width="10" stroke-linecap="round"/>
+  <path d="M15 58 L28 38 L43 57 Z" fill="#ffffff" stroke="#ffffff" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M64 46 V80 M50 67 L64 81 L78 67" fill="none" stroke="#ffffff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

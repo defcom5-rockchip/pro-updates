@@ -1,0 +1,391 @@
+#!/usr/bin/python3 -I
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 defcom5-rockchip
+"""
+pro-updates-helper — the only part of the Pro Updates window that runs as root.
+
+The window calls it through pkexec; polkit shows the message from
+io.github.defcom5-rockchip.pro-updates.policy and asks for the password each time.
+It accepts a fixed set of commands and checks every argument; nothing reaches a shell.
+
+  refresh                     apt-get update
+  upgrade-all                 apt-get update, then apt-get upgrade
+  upgrade PKG...              apt-get update, then upgrade only these installed packages
+  install-deb PATH [PKG]      install a local .deb (PKG: hold it afterwards)
+  hold PKG...                 apt-mark hold, and remember that Pro Updates made the hold
+  unhold PKG...               release holds that Pro Updates made (and only those)
+  install-flatpak             apt-get install flatpak
+  https-sources HOST...       rewrite http://HOST to https://HOST in the apt sources
+  repair-pins                 restore the distribution's vendor pin file
+
+apt never removes a package here (--no-remove), waits up to five minutes for a
+running update to finish, and keeps your changed config files. apt's output is
+copied to /var/log/pro-updates.log; if the window goes away, apt keeps running to
+the end. The exit code is the failing command's own.
+"""
+import datetime, os, re, shutil, signal, stat, subprocess, sys, tempfile, time
+
+APT_GET = "/usr/bin/apt-get"
+APT_MARK = "/usr/bin/apt-mark"
+DPKG_DEB = "/usr/bin/dpkg-deb"
+DPKG_QUERY = "/usr/bin/dpkg-query"
+APT_OPTS = ["-o", "DPkg::Lock::Timeout=300",
+            "-o", "Dpkg::Options::=--force-confdef",
+            "-o", "Dpkg::Options::=--force-confold",
+            "-o", "Dpkg::Use-Pty=0"]          # no progress bars in the window's log
+
+STATE = "/var/lib/pro-updates"
+HOLDS = os.path.join(STATE, "holds")              # holds made by Pro Updates, one name per line
+REFRESHED = os.path.join(STATE, "last-refresh")   # touched after every successful apt-get update here
+LOG = "/var/log/pro-updates.log"
+BACKUPS = "/var/backups/pro-updates"
+STAGE = "/var/cache/pro-updates"                  # root-owned copies of .debs being installed
+SOURCES_DIR = "/etc/apt/sources.list.d"
+PREFS_DIR = "/etc/apt/preferences.d"
+# A distribution that wants the "Repair" button ships its pin file here; Pro Updates
+# copies it into place unchanged and never writes pins of its own.
+VENDOR_PINS = "/usr/share/pi-desktop/apt/00-pidesktop-browsers"
+VENDOR_PINS_DEST = os.path.join(PREFS_DIR, "00-pidesktop-browsers")
+OLD_PIN_FILES = ("armbian-desktops", "pidesktop-browsers")
+
+# Debian policy 5.6.1 names, optional :arch. apt-get and apt-mark still expand regular
+# expressions ("sssd." matches every sssd* package), so a name is also required to BE an
+# installed package (dpkg-query does globs only, and none of * ? [ ] gets past this).
+PKG_RE = re.compile(r"[a-z0-9][a-z0-9+.-]+(:[a-z0-9]+)?")
+HOST_RE = re.compile(r"[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*(:[0-9]{1,5})?")
+
+LAST = []                                         # output lines of the last run(), for retry decisions
+
+
+def die(msg, code=2):
+    say(f"pro-updates-helper: {msg}", err=True)
+    sys.exit(code)
+
+
+def say(text, err=False):
+    """Write to the window; never fail (window gone, odd locale, anything)."""
+    try:
+        (sys.stderr if err else sys.stdout).write(text + "\n")
+        (sys.stderr if err else sys.stdout).flush()
+    except Exception:
+        pass
+
+
+def _log_open():
+    """The log, opened without following a symlink; None when it cannot be written."""
+    try:
+        if os.path.isfile(LOG) and not os.path.islink(LOG) and os.path.getsize(LOG) > 2 * 1024 * 1024:
+            os.replace(LOG, LOG + ".1")
+        fd = os.open(LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o640)
+        os.fchmod(fd, 0o640)
+        return os.fdopen(fd, "ab")
+    except OSError:
+        return None
+
+
+def _log_write(log, data):
+    """A full or read-only /var/log must never stop a job: the log is a copy only."""
+    if log is None: return None
+    try:
+        log.write(data); return log
+    except OSError:
+        try: log.close()
+        except OSError: pass
+        return None
+
+
+def run(cmd):
+    """Run cmd with its output read here (not by the window): a closed window must
+    never be able to kill apt or a maintainer script through a broken pipe."""
+    LAST.clear()
+    say("+ " + " ".join(cmd))
+    log = _log_write(_log_open(), f"\n=== {datetime.datetime.now():%F %T} {' '.join(cmd)}\n".encode())
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    for raw in iter(p.stdout.readline, b""):
+        log = _log_write(log, raw)
+        line = raw.decode("utf-8", "replace").rstrip("\n")
+        LAST.append(line)
+        del LAST[:-200]
+        say(line)
+    rc = p.wait()
+    log = _log_write(log, f"=== exit {rc}\n".encode())
+    if log:
+        try: log.close()
+        except OSError: pass
+    return rc
+
+
+def apt_env():
+    os.environ["DEBIAN_FRONTEND"] = "noninteractive"
+    os.environ["LC_ALL"] = "C.UTF-8"
+
+
+def valid_names(args):
+    if not args: die("no package names given")
+    for a in args:
+        if not PKG_RE.fullmatch(a): die(f"not a package name: {a!r}")
+    return args
+
+
+def installed_names(args):
+    """Names that are exactly one installed package each (no apt regex expansion)."""
+    for a in valid_names(args):
+        r = subprocess.run([DPKG_QUERY, "-W", "-f=${db:Status-Abbrev}|${Package}\n", "--", a],
+                           capture_output=True, text=True)
+        rows = [l.split("|", 1) for l in r.stdout.splitlines() if "|" in l]
+        if r.returncode or not rows or any(n != a.split(":")[0] or not s.startswith(("ii", "hi")) for s, n in rows):
+            die(f"not an installed package: {a!r}")
+    return args
+
+
+def backup_dir():
+    d = os.path.join(BACKUPS, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+    os.makedirs(d, mode=0o755, exist_ok=True)
+    return d
+
+
+def write_atomic(path, data, like):
+    """Replace path's contents (bytes); keeps mode and owner. A symlink's target is written."""
+    path = os.path.realpath(path)
+    st = os.stat(like)
+    tmp = path + ".pro-updates-new"
+    with open(tmp, "wb") as fh: fh.write(data)
+    os.chmod(tmp, st.st_mode & 0o7777)
+    os.chown(tmp, st.st_uid, st.st_gid)
+    os.replace(tmp, path)
+
+
+def read_holds():
+    try:
+        with open(HOLDS) as fh: return [l.strip() for l in fh if PKG_RE.fullmatch(l.strip())]
+    except OSError: return []
+
+
+def write_holds(names):
+    os.makedirs(STATE, mode=0o755, exist_ok=True)
+    with open(HOLDS + ".new", "w") as fh:
+        for n in sorted(set(names)): fh.write(n + "\n")
+    os.chmod(HOLDS + ".new", 0o644)
+    os.replace(HOLDS + ".new", HOLDS)
+
+
+def cmd_refresh(args):
+    if args: die("refresh takes no arguments")
+    apt_env()
+    for attempt in range(10):          # DPkg::Lock::Timeout covers the dpkg lock, not the lists lock
+        rc = run([APT_GET, "update"] + APT_OPTS)
+        if rc == 0 or attempt == 9 or not any("Could not get lock" in l and "lists" in l for l in LAST): break
+        say("apt's package lists are locked by another update — waiting 30 s")
+        time.sleep(30)
+    if rc == 0:
+        os.makedirs(STATE, mode=0o755, exist_ok=True)
+        with open(REFRESHED, "w"): pass
+    return rc
+
+
+def cmd_upgrade_all(args):
+    if args: die("upgrade-all takes no arguments")
+    rc = cmd_refresh([])
+    if rc: return rc
+    return run([APT_GET, "upgrade", "-y", "--no-remove"] + APT_OPTS)
+
+
+def cmd_upgrade(args):
+    pkgs = installed_names(args)
+    rc = cmd_refresh([])
+    if rc: return rc
+    return run([APT_GET, "install", "--only-upgrade", "-y", "--no-remove"] + APT_OPTS + ["--"] + pkgs)
+
+
+def cmd_install_deb(args):
+    if not 1 <= len(args) <= 2: die("usage: install-deb PATH [PKG]")
+    src = os.path.realpath(args[0])
+    if not (os.path.isabs(args[0]) and src.endswith(".deb") and os.path.isfile(src)):
+        die(f"not a .deb file: {args[0]!r}")
+    pkg = valid_names(args[1:])[0] if len(args) == 2 else None
+    # check and install a root-owned copy, so the file cannot change in between. The source
+    # is opened without following a symlink (one swapped in after the check fails here) and
+    # must be a regular file; the copy stays private until it has been checked.
+    try:
+        fd = os.open(src, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as e:
+        die(f"cannot open {args[0]!r}: {e.strerror}")
+    with os.fdopen(fd, "rb") as fin:
+        if not stat.S_ISREG(os.fstat(fin.fileno()).st_mode): die(f"not a regular file: {args[0]!r}")
+        os.makedirs(STAGE, mode=0o755, exist_ok=True)
+        stage = tempfile.mkdtemp(dir=STAGE)          # 0700
+        deb = os.path.join(stage, os.path.basename(src))
+        try:
+            with open(os.open(deb, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as fout:
+                shutil.copyfileobj(fin, fout)
+        except BaseException:
+            shutil.rmtree(stage, ignore_errors=True); raise
+    try:
+        if pkg:
+            r = subprocess.run([DPKG_DEB, "-f", "--", deb, "Package"], capture_output=True, text=True)
+            if r.returncode or r.stdout.strip() != pkg:
+                die(f"{os.path.basename(src)} is not package {pkg} (it says {r.stdout.strip() or '?'})")
+        os.chmod(deb, 0o644); os.chmod(stage, 0o755)  # checked: let apt's _apt user read it
+        apt_env()
+        rc = run([APT_GET, "install", "-y", "--no-remove"] + APT_OPTS + ["--", deb])
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    if rc or not pkg: return rc
+    return cmd_hold([pkg])
+
+
+def system_holds():
+    r = subprocess.run([APT_MARK, "showhold"], capture_output=True, text=True)
+    return set(r.stdout.split())
+
+
+def cmd_hold(args):
+    pkgs = installed_names(args)
+    before = system_holds()
+    rc = run([APT_MARK, "hold", "--"] + pkgs)
+    # record only holds this call made: a package the system already held stays the system's
+    if rc == 0: write_holds(read_holds() + [p for p in pkgs if p.split(":")[0] not in before and p not in before])
+    return rc
+
+
+def known_to_dpkg(name):
+    r = subprocess.run([DPKG_QUERY, "-W", "-f=${Package}\n", "--", name], capture_output=True, text=True)
+    return r.returncode == 0 and set(r.stdout.split()) == {name.split(":")[0]}
+
+
+def cmd_unhold(args):
+    pkgs = valid_names(args)
+    ours = set(read_holds())
+    foreign = [p for p in pkgs if p not in ours]
+    if foreign: die("not held by Pro Updates (left alone): " + ", ".join(foreign))
+    # a recorded name dpkg no longer knows would be expanded by apt-mark as a pattern
+    gone = [p for p in pkgs if not known_to_dpkg(p)]
+    if gone:
+        say("no longer installed, removed from the record: " + ", ".join(gone))
+        write_holds([p for p in ours if p not in gone]); ours -= set(gone)
+    pkgs = [p for p in pkgs if p not in gone]
+    if not pkgs: return 0
+    rc = run([APT_MARK, "unhold", "--"] + pkgs)
+    if rc == 0: write_holds([p for p in ours if p not in pkgs])
+    return rc
+
+
+def cmd_install_flatpak(args):
+    if args: die("install-flatpak takes no arguments")
+    apt_env()
+    return run([APT_GET, "install", "-y", "--no-remove"] + APT_OPTS + ["--", "flatpak"])
+
+
+def source_files():
+    files = ["/etc/apt/sources.list"]
+    try:
+        for n in sorted(os.listdir(SOURCES_DIR)):
+            if n.endswith((".list", ".sources")): files.append(os.path.join(SOURCES_DIR, n))
+    except OSError: pass
+    return [f for f in files if os.path.isfile(f)]
+
+
+def cmd_https_sources(args):
+    if not args: die("no hosts given")
+    for h in args:
+        if not HOST_RE.fullmatch(h): die(f"not a host name: {h!r}")
+    pats = [(h, re.compile(rb"http://" + re.escape(h.encode()) + rb"(?=[/\s\"']|$)", re.M)) for h in args]
+    bdir, changed = None, []
+    for f in source_files():
+        with open(f, "rb") as fh: data = fh.read()
+        new = data
+        for h, pat in pats: new = pat.sub(b"https://" + h.encode(), new)
+        if new == data: continue
+        bdir = bdir or backup_dir()
+        shutil.copy2(f, os.path.join(bdir, os.path.basename(f)))
+        write_atomic(f, new, f)
+        changed.append(f)
+        say(f"https: {f}")
+    if not changed:
+        say("https: no source file mentions those hosts over http")
+        return 0
+    say(f"backups: {bdir}")
+    rc = cmd_refresh([])
+    if rc:                              # a mirror that fails over https: put the files back
+        for f in changed:
+            with open(os.path.join(bdir, os.path.basename(f)), "rb") as fh: write_atomic(f, fh.read(), f)
+            say(f"https: restored {f} (apt update failed)")
+        cmd_refresh([])
+    return rc
+
+
+def codename():
+    try:
+        with open("/etc/os-release") as fh:
+            for line in fh:
+                if line.startswith("VERSION_CODENAME="): return line.split("=", 1)[1].strip().strip('"')
+    except OSError: pass
+    return ""
+
+
+def drop_desktop_component(text, cn):
+    """Remove '<codename>-desktop' from Deb822 Components: lines; a line that would be
+    left empty is not touched (apt rejects an empty Components field)."""
+    out = []
+    for line in text.splitlines(keepends=True):
+        m = re.match(r"(?i)(components:)(.*?)(\r?\n)?$", line)
+        if m:
+            words = m.group(2).split()
+            kept = [w for w in words if w != f"{cn}-desktop"]
+            if kept and kept != words:
+                line = f"{m.group(1)} {' '.join(kept)}{m.group(3) or ''}"
+        out.append(line)
+    return "".join(out)
+
+
+def cmd_repair_pins(args):
+    if args: die("repair-pins takes no arguments")
+    if not os.path.isfile(VENDOR_PINS): die(f"this system ships no vendor pin file ({VENDOR_PINS})")
+    bdir = backup_dir()
+    armbian = os.path.join(SOURCES_DIR, "armbian.sources")
+    for f in [armbian, VENDOR_PINS_DEST] + [os.path.join(PREFS_DIR, n) for n in OLD_PIN_FILES]:
+        if os.path.isfile(f): shutil.copy2(f, os.path.join(bdir, os.path.basename(f)))
+    say(f"backups: {bdir}")
+    shutil.copyfile(VENDOR_PINS, VENDOR_PINS_DEST)
+    os.chmod(VENDOR_PINS_DEST, 0o644)
+    say(f"pins: {VENDOR_PINS_DEST} restored from {VENDOR_PINS}")
+    for n in OLD_PIN_FILES:
+        p = os.path.join(PREFS_DIR, n)
+        if os.path.isfile(p): os.remove(p); say(f"pins: removed {p}")
+    cn = codename()
+    if cn and os.path.isfile(armbian):
+        with open(armbian) as fh: text = fh.read()
+        new = drop_desktop_component(text, cn)
+        if new != text:
+            write_atomic(armbian, new.encode(), armbian)
+            say(f"sources: dropped the {cn}-desktop component from {armbian}")
+    return cmd_refresh([])
+
+
+def outlive_the_window():
+    """pkexec asks the kernel for SIGTERM when its parent dies (PR_SET_PDEATHSIG); unless a
+    credential change clears it, that request survives into this process, and closing the
+    window would kill the helper, and with it apt, mid-run (seen when the window runs as
+    root). Cancel it, and ignore SIGHUP: a job, once started, runs to its end."""
+    try:
+        import ctypes
+        ctypes.CDLL(None, use_errno=True).prctl(1, 0, 0, 0, 0)      # PR_SET_PDEATHSIG, no signal
+    except Exception:
+        pass
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+
+
+COMMANDS = {
+    "refresh": cmd_refresh, "upgrade-all": cmd_upgrade_all, "upgrade": cmd_upgrade,
+    "install-deb": cmd_install_deb, "hold": cmd_hold, "unhold": cmd_unhold,
+    "install-flatpak": cmd_install_flatpak, "https-sources": cmd_https_sources,
+    "repair-pins": cmd_repair_pins,
+}
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
+        die("usage: pro-updates-helper {" + ",".join(COMMANDS) + "} [ARGS]")
+    if os.geteuid() != 0: die("must run as root (the window starts it with pkexec)")
+    outlive_the_window()
+    os.umask(0o022)
+    sys.exit(COMMANDS[sys.argv[1]](sys.argv[2:]))

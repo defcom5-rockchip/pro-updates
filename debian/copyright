@@ -1,0 +1,23 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: pro-updates
+Upstream-Contact: defcom5-rockchip <286489597+defcom5-rockchip@users.noreply.github.com>
+Source: https://github.com/defcom5-rockchip/pro-updates
+Comment: Ubuntu and Ubuntu Pro are trademarks of Canonical Ltd. This project is
+ not affiliated with or endorsed by Canonical.
+
+Files: *
+Copyright: 2026 defcom5-rockchip
+License: GPL-3.0-or-later
+
+License: GPL-3.0-or-later
+ This program is free software: you can redistribute it and/or modify it under
+ the terms of the GNU General Public License as published by the Free Software
+ Foundation, either version 3 of the License, or (at your option) any later
+ version.
+ .
+ This program is distributed in the hope that it will be useful, but WITHOUT
+ ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+ .
+ On Debian systems, the complete text of the GNU General Public License
+ version 3 can be found in "/usr/share/common-licenses/GPL-3".

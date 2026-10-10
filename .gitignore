@@ -1,2 +1,7 @@
 __pycache__/
 *.pyc
+debian/pro-updates/
+debian/.debhelper/
+debian/files
+debian/*.substvars
+debian/debhelper-build-stamp

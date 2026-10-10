@@ -1,0 +1,30 @@
+.\" SPDX-License-Identifier: GPL-3.0-or-later
+.TH PRO-UPDATES-GUI 1 "2026-10-09" "pro-updates 1.5.0" "User Commands"
+.SH NAME
+pro-updates-gui \- the Pro Updates window
+.SH SYNOPSIS
+.B pro-updates-gui
+.SH DESCRIPTION
+A GTK window with the same sections as
+.BR pro-updates (1),
+plus the transport policy (https only, or http allowed for a local mirror),
+when the package lists were last downloaded, which repository each browser,
+mail client and editor would update from, and builds from source described by
+build.json files.
+.PP
+Changes are made only when you press a button. Root work goes through
+.I /usr/libexec/pro-updates/pro-updates-helper
+started with pkexec, which shows the polkit message of
+.I io.github.defcom5-rockchip.pro-updates.helper
+and asks for the password each time. apt never removes a package from the
+window. A system-wide Flatpak update follows Flatpak's own polkit rules
+(by default no password for updating apps that are already installed).
+The helper's apt output is also written to
+.IR /var/log/pro-updates.log .
+.SH ENVIRONMENT
+.TP
+.B PROUPDATES_BUILD_DIRS
+Extra folders to search for build.json files, colon-separated.
+.SH SEE ALSO
+.BR pro-updates (1),
+.BR pkexec (1)

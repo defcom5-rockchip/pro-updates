@@ -1,0 +1,54 @@
+.\" SPDX-License-Identifier: GPL-3.0-or-later
+.TH PRO-UPDATES 1 "2026-10-09" "pro-updates 1.5.0" "User Commands"
+.SH NAME
+pro-updates \- list and apply apt and Flatpak updates, with Ubuntu Pro (ESM) status
+.SH SYNOPSIS
+.B pro-updates
+.RB [ \-\-check ]
+.RB [ \-\-version ]
+.RB [ \-\-help ]
+.SH DESCRIPTION
+.B pro-updates
+goes through three sections and asks before each action:
+.IP 1. 4
+Ubuntu Pro (ESM): universe fixes Canonical publishes only to Ubuntu Pro
+subscribers, as reported by the Ubuntu Pro client, with any free remedy (a
+Flathub build, or a newer version in another configured repository). Without
+the Ubuntu Pro client this section says "not checked".
+.IP 2. 4
+Flatpak: updates for the Flatpak apps already installed.
+.IP 3. 4
+Regular apt: the normal apt upgrade. Held packages are never upgraded; updates
+that need packages added or removed are named and left alone.
+.PP
+apt waits up to five minutes for a running update, keeps changed config files,
+and never removes a package (\-\-no\-remove), with one exception: after a
+Flathub VLC install it offers to remove the VLC .debs, and apt shows the list
+and asks. Run it as your normal user; it uses sudo when it needs root, and
+exits with 1 when a step failed.
+.SH OPTIONS
+.TP
+.B \-\-check
+Audit only: change nothing. It still reads the network (DNS, and Flathub if a
+remote is configured).
+.TP
+.B \-\-version
+Print the version.
+.SH FILES
+.TP
+.I ~/.config/pro-updates/config.ini
+[policy] allow_plaintext = yes|no (default no: updates from plain-http sources
+are skipped). Shared with the window.
+.TP
+.I /etc/pro-updates/pinned\fR, \fI~/.config/pro-updates/pinned
+Package names never offered for a Flathub swap, one per line.
+.TP
+.I /var/lib/pro-updates/holds
+Holds made with the window's "Hold back".
+.SH SEE ALSO
+.BR pro-updates-gui (1),
+.BR apt-get (8),
+.BR flatpak (1)
+.SH NOTES
+Not affiliated with or endorsed by Canonical. Ubuntu and Ubuntu Pro are
+trademarks of Canonical Ltd.

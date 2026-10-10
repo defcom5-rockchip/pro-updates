@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[Desktop Entry]
+Type=Application
+Name=Pro Updates
+GenericName=Software Updates
+Comment=See and apply apt and Flatpak updates; shows each browser's update source and the held packages
+Exec=pro-updates-gui
+Icon=pro-updates
+Terminal=false
+Categories=System;PackageManager;
+Keywords=security;updates;apt;flatpak;esm;pro;holds;sources;

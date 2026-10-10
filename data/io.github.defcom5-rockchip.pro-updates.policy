@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Pro Updates</vendor>
+  <vendor_url>https://github.com/defcom5-rockchip/pro-updates</vendor_url>
+  <action id="io.github.defcom5-rockchip.pro-updates.helper">
+    <description>Install updates and change update settings</description>
+    <message>Authentication is required to install updates or change how this computer gets them</message>
+    <icon_name>pro-updates</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/pro-updates/pro-updates-helper</annotate>
+  </action>
+</policyconfig>

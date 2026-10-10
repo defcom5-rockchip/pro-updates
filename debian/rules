@@ -1,0 +1,18 @@
+#!/usr/bin/make -f
+# SPDX-License-Identifier: GPL-3.0-or-later
+%:
+	dh $@
+
+override_dh_auto_install:
+	install -D -m 0755 pro-updates.py debian/pro-updates/usr/bin/pro-updates
+	install -D -m 0755 pro-updates-gui.py debian/pro-updates/usr/bin/pro-updates-gui
+	install -D -m 0755 pro-updates-helper debian/pro-updates/usr/libexec/pro-updates/pro-updates-helper
+	install -D -m 0644 data/pro-updates.desktop debian/pro-updates/usr/share/applications/pro-updates.desktop
+	install -D -m 0644 data/pro-updates.svg debian/pro-updates/usr/share/icons/hicolor/scalable/apps/pro-updates.svg
+	install -D -m 0644 data/io.github.defcom5-rockchip.pro-updates.policy \
+		debian/pro-updates/usr/share/polkit-1/actions/io.github.defcom5-rockchip.pro-updates.policy
+
+override_dh_auto_test:
+ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests
+endif

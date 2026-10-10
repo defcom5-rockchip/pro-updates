@@ -1,0 +1,29 @@
+Source: pro-updates
+Section: admin
+Priority: optional
+Maintainer: defcom5-rockchip <286489597+defcom5-rockchip@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13), python3:any <!nocheck>
+Standards-Version: 4.7.2
+Homepage: https://github.com/defcom5-rockchip/pro-updates
+Vcs-Git: https://github.com/defcom5-rockchip/pro-updates.git
+Rules-Requires-Root: no
+
+Package: pro-updates
+Architecture: all
+Depends: ${misc:Depends}, python3, python3-gi, gir1.2-gtk-3.0, python3-apt, pkexec
+Suggests: flatpak
+Description: update window for apt and Flatpak, with Ubuntu Pro (ESM) status
+ Pro Updates lists the pending apt and Flatpak updates and applies the ones you
+ tick. It shows which repository each browser, mail client and editor would
+ update from, which packages are held (held packages are never upgraded), and,
+ where the Ubuntu Pro client is installed, the universe fixes Canonical
+ publishes only to Ubuntu Pro subscribers, with any free remedy.
+ .
+ The window's root work goes through one small helper started with pkexec,
+ which asks for the password each time: fixed commands, checked arguments, no
+ shell. apt never removes a package from the window. The terminal tool runs
+ apt through sudo; its only removal is an offer to remove the VLC .debs after a
+ Flathub VLC install, where apt shows the list and asks.
+ .
+ Not affiliated with or endorsed by Canonical. Ubuntu and Ubuntu Pro are
+ trademarks of Canonical Ltd.

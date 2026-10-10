@@ -1,0 +1,40 @@
+pro-updates (1.5.0) resolute; urgency=medium
+
+  * Root work goes through one helper,
+    /usr/libexec/pro-updates/pro-updates-helper,
+    started with pkexec, with its own polkit message, asking for the password
+    each time: fixed commands, checked host names and file paths, no shell.
+    Package names must each be exactly one installed package (apt would expand
+    them as patterns); a local .deb is checked and installed from a root-owned
+    copy; holds the system made are never recorded as Pro Updates' own.
+  * The helper reads apt's output itself and copies it to
+    /var/log/pro-updates.log, so closing the window cannot interrupt apt; the
+    window asks before closing while a job runs.
+  * apt never removes a package from the window (--no-remove), waits up to five
+    minutes for a running update, keeps changed config files, and failures are
+    reported with their exit code instead of "done".
+  * Without the Ubuntu Pro client, the Ubuntu Pro (ESM) section says "not
+    checked" instead of "nothing gated".
+  * Package lists that were never downloaded are reported as such (not as "up
+    to date"); kept-back updates are named; holds made with "Hold back" can be
+    released.
+  * Flathub is added per user and only after asking; name-guessed Flathub
+    matches are unticked; Chromium is no longer offered as a Flathub swap;
+    /etc/pro-updates/pinned blocks swaps for hardware-tuned builds.
+  * The https-only policy skips only the updates from plaintext sources, and
+    "Allow http" is honoured when applying.
+  * Downgrades that a pin above 1000 asks for are listed and left alone; the
+    other updates still go ahead (apt-get upgrade -y used to refuse them all).
+  * "Repair sources" copies the distribution's own pin file (where it ships
+    one) instead of writing a different one.
+  * Downloads in the Builds section are https-only and checked against a
+    sha256 from build.json when it has one; no private paths in the defaults.
+  * One job at a time; a failed scan or a malformed build.json no longer
+    leaves the window stuck; output that is not UTF-8 no longer stalls a job.
+  * The https rewrite of apt sources is undone when apt update then fails, and
+    keeps symlinked source files; the list age shown is when the lists were
+    downloaded, not when the archive published them.
+  * Neutral wording, an About dialog with the trademark notice, SPDX headers,
+    an icon drawn for the project, and packaging as a .deb.
+
+ -- defcom5-rockchip <286489597+defcom5-rockchip@users.noreply.github.com>  Fri, 09 Oct 2026 20:30:05 -0700

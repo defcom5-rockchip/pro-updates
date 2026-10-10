@@ -1,0 +1,12 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# purge: drop Pro Updates' state, staging dir and log. Backups of apt source and pin
+# files in /var/backups/pro-updates are kept: they are copies of your configuration.
+# Holds made with "Hold back" are left in place (apt-mark showhold lists them).
+set -e
+if [ "$1" = purge ]; then
+	rm -rf /var/lib/pro-updates /var/cache/pro-updates
+	rm -f /var/log/pro-updates.log /var/log/pro-updates.log.1
+fi
+#DEBHELPER#
+exit 0
